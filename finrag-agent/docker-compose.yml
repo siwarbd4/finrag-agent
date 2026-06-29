@@ -1,0 +1,80 @@
+version: "3.9"
+
+# FinRAG Agent - Docker Compose
+# Runs the API alongside Ollama (GPU optional)
+
+services:
+  # ─── FinRAG API ────────────────────────────────────────────────────────────
+  finrag-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: finrag-api
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-mistral}
+      - CHROMA_PERSIST_DIR=/app/data/vectors
+      - PDF_UPLOAD_DIR=/app/data/pdfs
+      - DATABASE_URL=sqlite+aiosqlite:///./data/finrag.db
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - finrag-network
+
+  # ─── Ollama LLM ────────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: finrag-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - finrag-network
+    # Uncomment for GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ─── Model Pull (one-time setup) ───────────────────────────────────────────
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: finrag-model-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        ollama pull ${OLLAMA_MODEL:-mistral} &&
+        echo 'Model pulled successfully'
+      "
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    networks:
+      - finrag-network
+    restart: "no"
+
+volumes:
+  ollama-data:
+    driver: local
+
+networks:
+  finrag-network:
+    driver: bridge
