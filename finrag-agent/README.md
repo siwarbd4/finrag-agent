@@ -1,27 +1,40 @@
 # FinRAG Agent 🏦🤖
 
-**Agent IA RAG pour l'analyse de documents financiers**
+**Agent IA RAG pour l'analyse de documents financiers**  
+*Développé par Siwar Bouamoud*
 
-Un microservice complet de type RAG (Retrieval-Augmented Generation) permettant d'interroger des documents financiers en langage naturel, avec un LLM local via Ollama.
-
----
-
-## 📋 Table des matières
-
-1. [Architecture](#architecture)
-2. [Choix techniques](#choix-techniques)
-3. [Prérequis](#prérequis)
-4. [Installation rapide](#installation-rapide)
-5. [Installation détaillée](#installation-détaillée)
-6. [Configuration Ollama](#configuration-ollama)
-7. [Utilisation de l'API](#utilisation-de-lapi)
-8. [Tests](#tests)
-9. [Docker](#docker)
-10. [Structure du projet](#structure-du-projet)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green.svg)](https://fastapi.tiangolo.com)
+[![Ollama](https://img.shields.io/badge/Ollama-Local_LLM-orange.svg)](https://ollama.ai)
+[![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector_Store-purple.svg)](https://chromadb.com)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
-## Architecture
+## 📌 Description
+
+**FinRAG Agent** est un système RAG (Retrieval-Augmented Generation) conçu spécifiquement pour l'analyse de documents financiers PDF. Il permet d'interroger une base documentaire en langage naturel et d'obtenir des réponses précises, ancrées uniquement dans les documents indexés — sans hallucination et sans aucun appel à des API cloud.
+
+> 💡 **Exemple d'usage :** Uploader un rapport annuel de 200 pages et demander directement *"Quel est le chiffre d'affaires du S1 2023 ?"* — le système retrouve les passages pertinents et génère une réponse sourcée.
+
+---
+
+## 🗂️ Table des matières
+
+1. [Architecture](#-architecture)
+2. [Choix techniques](#-choix-techniques)
+3. [Prérequis](#-prérequis)
+4. [Installation](#-installation)
+5. [Configuration Ollama](#-configuration-ollama)
+6. [Utilisation de l'API](#-utilisation-de-lapi)
+7. [Tests](#-tests)
+8. [Docker](#-docker)
+9. [Structure du projet](#-structure-du-projet)
+10. [Documents supportés](#-documents-financiers-supportés)
+
+---
+
+## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -51,221 +64,189 @@ Un microservice complet de type RAG (Retrieval-Augmented Generation) permettant 
 │   SQLite DB     │    │   ChromaDB            │   │  Ollama LLM    │
 │                 │    │   (Vector Store)      │   │                │
 │ - Documents     │    │                       │   │ - mistral      │
-│ - Query logs    │    │ - Embeddings          │   │ - llama3.2     │
-│ - Metadata      │    │ - Similarity search   │   │ - phi3         │
-│                 │    │ - Cosine distance     │   │ - etc.         │
+│ - Query logs    │    │ - Embeddings (768d)   │   │ - llama3.2     │
+│ - Métadonnées   │    │ - Cosine similarity   │   │ - phi3:mini    │
 └─────────────────┘    └───────────────────────┘   └────────────────┘
 ```
 
 ### Pipeline d'ingestion PDF
 
 ```
-PDF File
-   │
-   ▼
-pdfplumber (primary)     pypdf (fallback)
-   │                         │
-   └──────────┬──────────────┘
-              │
-         Text + Tables
-              │
-         Text Cleaning
-              │
-    RecursiveCharacterTextSplitter
-    (chunk_size=1000, overlap=200)
-              │
-         Chunks [ ]
-              │
-   SentenceTransformer.encode()
-   (paraphrase-multilingual-mpnet-base-v2)
-              │
-         Embeddings
-              │
-    ChromaDB.upsert() → Cosine index
-              │
-         SQLite update (status=indexed)
+Fichier PDF
+     │
+     ▼
+pdfplumber (primaire)    pypdf (fallback)
+     │                        │
+     └──────────┬─────────────┘
+                │
+           Texte + Tableaux
+                │
+           Nettoyage texte
+                │
+     RecursiveCharacterTextSplitter
+     (chunk_size=1000, overlap=200)
+                │
+           Chunks [ ]
+                │
+     SentenceTransformer.encode()
+     (paraphrase-multilingual-mpnet-base-v2)
+                │
+           Embeddings [N × 768]
+                │
+     ChromaDB.upsert() → Index HNSW
+                │
+     SQLite update (status=indexed)
 ```
 
 ### Pipeline de requête RAG
 
 ```
 Question (langage naturel)
-         │
+          │
 SentenceTransformer.encode()
-         │
-ChromaDB.query() → Top-K chunks (cosine similarity)
-         │
+          │
+ChromaDB.query() → Top-5 chunks (cosine similarity)
+          │
 Filtre par seuil (≥ 0.3)
-         │
-Build RAG prompt:
+          │
+Construction du prompt RAG :
   [CONTEXTE]
-  Source 1: chunk_text (doc_name, page)
-  Source 2: chunk_text ...
-  ---
+  Source 1: chunk_text (fichier, page)
+  Source 2: ...
   QUESTION: ...
-         │
-Ollama /api/generate
-(temperature=0.1, num_predict=1024)
-         │
+          │
+Ollama /api/generate (mistral, temp=0.1)
+          │
 Réponse structurée + sources citées
-         │
-JSON Response (answer, sources, timing)
+          │
+JSON Response (answer, sources, timing_ms)
 ```
 
 ---
 
-## Choix techniques
+## ⚙️ Choix techniques
 
-| Composant | Choix | Justification |
-|-----------|-------|---------------|
-| **Langage** | Python 3.11 | Ecosystème ML/AI mature, syntaxe async native |
-| **Framework API** | FastAPI | Async natif, OpenAPI auto, validation Pydantic |
-| **LLM local** | Ollama | Simple à installer, multi-OS, multi-modèles |
-| **Modèle génération** | Mistral 7B | Excellent français, léger (4GB RAM), instruction-tuned |
-| **Modèle embeddings** | paraphrase-multilingual-mpnet-base-v2 | Multilingue FR/EN, haute qualité, gratuit |
-| **Vector Store** | ChromaDB | Persistant, simple, cosine similarity, open-source |
-| **PDF extraction** | pdfplumber + pypdf | pdfplumber pour tables financières, pypdf en fallback |
+| Composant | Choix retenu | Justification |
+|-----------|-------------|---------------|
+| **Langage** | Python 3.11+ | Écosystème ML/AI mature, async natif |
+| **Framework API** | FastAPI 0.115 | Async natif, OpenAPI auto, validation Pydantic |
+| **LLM local** | Ollama | Multi-OS, multi-modèles, 100% local |
+| **Modèle génération** | Mistral 7B | Excellent français, 8 GB RAM, instruction-tuned |
+| **Modèle embeddings** | paraphrase-multilingual-mpnet-base-v2 | Multilingue FR/EN, 768d, gratuit |
+| **Vector Store** | ChromaDB | Persistant, cosine similarity, zéro serveur |
+| **PDF extraction** | pdfplumber + pypdf | pdfplumber pour tableaux financiers, pypdf en fallback |
 | **Text splitting** | LangChain RecursiveCharacterTextSplitter | Overlap intelligent, préserve le contexte |
-| **Base de données** | SQLite + SQLAlchemy async | Zéro configuration, parfait pour dev/MVP |
-| **Conteneurisation** | Docker + docker-compose | Reproductible, isolé, prêt pour le déploiement |
-
-### Modèles Ollama recommandés par profil machine
-
-| Profil machine | RAM disponible | Modèle recommandé | Commande |
-|----------------|---------------|-------------------|---------|
-| Légère | 4 GB | `phi3:mini` | `ollama pull phi3:mini` |
-| Standard | 8 GB | `mistral:7b` | `ollama pull mistral` |
-| Puissante | 16 GB | `llama3.2:8b` | `ollama pull llama3.2` |
-| GPU disponible | - | `mistral:latest` | `ollama pull mistral` |
+| **Base de données** | SQLite + SQLAlchemy async | Zéro configuration, adapté MVP |
+| **Conteneurisation** | Docker + docker-compose | Reproductible, isolé |
 
 ---
 
-## Prérequis
+## 📋 Prérequis
 
-- Python **3.10+**
-- [Ollama](https://ollama.ai) installé et en cours d'exécution
-- 8 GB RAM minimum (4 GB pour phi3:mini)
-- ~5 GB d'espace disque (modèles + données)
+- **Python** 3.11 ou supérieur
+- **Ollama** installé et en cours d'exécution ([ollama.ai](https://ollama.ai))
+- **RAM** : 8 GB minimum (4 GB si utilisation de `phi3:mini`)
+- **Espace disque** : ~6 GB (modèle Mistral + dépendances)
+- **Windows** : Microsoft C++ Build Tools (pour ChromaDB)
 
 ---
 
-## Installation rapide
+## 🚀 Installation
+
+### Étape 1 — Cloner le dépôt
 
 ```bash
-# 1. Cloner le repo
-git clone https://github.com/VOTRE_USERNAME/finrag-agent.git
+git clone https://github.com/siwar-bouamoud/finrag-agent.git
 cd finrag-agent
-
-# 2. Setup automatique
-chmod +x scripts/setup.sh
-./scripts/setup.sh
-
-# 3. Configurer l'environnement
-cp .env.example .env
-# Éditer .env si nécessaire
-
-# 4. Démarrer Ollama + télécharger le modèle
-ollama serve &
-ollama pull mistral
-
-# 5. Lancer l'API
-source venv/bin/activate
-uvicorn app.main:app --reload
-
-# 6. Accéder à la documentation
-open http://localhost:8000/docs
 ```
 
----
-
-## Installation détaillée
-
-### Étape 1 — Installer Ollama
+### Étape 2 — Installer Ollama
 
 **macOS / Linux :**
 ```bash
 curl -fsSL https://ollama.ai/install.sh | sh
 ```
 
-**Windows :** Télécharger l'installeur depuis [ollama.ai](https://ollama.ai)
+**Windows :** Télécharger l'installeur depuis [ollama.ai/download](https://ollama.ai/download)
 
-### Étape 2 — Télécharger un modèle adapté
+### Étape 3 — Télécharger le modèle
 
 ```bash
-# Démarrer le daemon Ollama
+# Démarrer Ollama
 ollama serve
 
 # Choisir selon votre RAM :
-ollama pull phi3:mini        # 4 GB RAM
-ollama pull mistral          # 8 GB RAM  ← recommandé
-ollama pull llama3.2         # 16 GB RAM
+ollama pull phi3:mini    # 4 GB RAM
+ollama pull mistral      # 8 GB RAM  ← recommandé
+ollama pull llama3.2     # 16 GB RAM
 
-# Tester le modèle
+# Vérifier le fonctionnement
 ollama run mistral "Qu'est-ce qu'un bilan financier ?"
 ```
 
-### Étape 3 — Vérifier le bon fonctionnement
+### Étape 4 — Environnement Python
 
 ```bash
-# Tester Ollama via le script fourni
-chmod +x scripts/test_ollama.sh
-OLLAMA_MODEL=mistral ./scripts/test_ollama.sh
-```
+# Créer l'environnement virtuel
+python -m venv venv
 
-### Étape 4 — Installer le projet
+# Activer (Linux/macOS)
+source venv/bin/activate
 
-```bash
-# Créer et activer le venv
-python3 -m venv venv
-source venv/bin/activate   # Linux/macOS
-# ou: venv\Scripts\activate  # Windows
+# Activer (Windows)
+venv\Scripts\activate
 
 # Installer les dépendances
 pip install -r requirements.txt
-
-# Configurer l'environnement
-cp .env.example .env
-# Éditer .env : définir OLLAMA_MODEL selon votre choix
 ```
 
-### Étape 5 — Lancer l'API
+> **Windows uniquement :** Si une erreur `chroma-hnswlib` apparaît, installer d'abord les [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) en sélectionnant "Desktop development with C++".
+
+### Étape 5 — Configuration
 
 ```bash
-# Développement (avec rechargement automatique)
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-# Production
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+cp .env.example .env
 ```
 
-L'API est disponible sur :
+Éditer `.env` :
+```env
+OLLAMA_MODEL=mistral
+OLLAMA_BASE_URL=http://localhost:11434
+CHUNK_SIZE=1000
+CHUNK_OVERLAP=200
+TOP_K_RESULTS=5
+SIMILARITY_THRESHOLD=0.3
+```
+
+### Étape 6 — Lancer l'API
+
+```bash
+# Terminal 1 — Ollama (laisser ouvert)
+ollama serve
+
+# Terminal 2 — API
+venv\Scripts\activate   # ou source venv/bin/activate
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Accéder à la documentation interactive :
 - **Swagger UI** : http://localhost:8000/docs
 - **ReDoc** : http://localhost:8000/redoc
-- **Health** : http://localhost:8000/api/v1/health
+- **Health check** : http://localhost:8000/api/v1/health
 
 ---
 
-## Configuration Ollama
+## 🤖 Configuration Ollama
 
-Le fichier `.env` contrôle toute la configuration :
-
-```env
-# Modèle de génération (mistral, llama3.2, phi3:mini...)
-OLLAMA_MODEL=mistral
-
-# URL Ollama (par défaut en local)
-OLLAMA_BASE_URL=http://localhost:11434
-
-# Paramètres RAG
-CHUNK_SIZE=1000          # Taille des chunks (caractères)
-CHUNK_OVERLAP=200        # Chevauchement entre chunks
-TOP_K_RESULTS=5          # Nombre de chunks récupérés par requête
-SIMILARITY_THRESHOLD=0.3 # Score minimum de similarité (0-1)
-```
+| Profil machine | RAM disponible | Modèle recommandé | Commande |
+|----------------|---------------|-------------------|----------|
+| Légère | 4 GB | `phi3:mini` | `ollama pull phi3:mini` |
+| **Standard** | **8 GB** | **`mistral`** | **`ollama pull mistral`** |
+| Puissante | 16 GB | `llama3.2` | `ollama pull llama3.2` |
 
 ---
 
-## Utilisation de l'API
+## 📡 Utilisation de l'API
 
 ### 1. Uploader un document PDF
 
@@ -278,21 +259,20 @@ curl -X POST http://localhost:8000/api/v1/documents/upload \
 ```json
 {
   "document_id": 1,
-  "filename": "rapport_annuel_2023_a1b2c3d4.pdf",
+  "filename": "rapport_annuel_2023_a1b2c3.pdf",
   "original_filename": "rapport_annuel_2023.pdf",
-  "file_size": 2048576,
   "status": "indexed",
   "message": "Document indexed successfully: 42 pages, 187 chunks"
 }
 ```
 
-### 2. Poser une question
+### 2. Poser une question en langage naturel
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/query/ \
   -H "Content-Type: application/json" \
   -d '{
-    "question": "Quel est le chiffre d affaires total pour l exercice 2023 ?",
+    "question": "Quel est le chiffre d affaires total pour 2023 ?",
     "language": "fr"
   }'
 ```
@@ -300,21 +280,18 @@ curl -X POST http://localhost:8000/api/v1/query/ \
 **Réponse :**
 ```json
 {
-  "question": "Quel est le chiffre d affaires total pour l exercice 2023 ?",
-  "answer": "Selon le rapport annuel 2023 (page 12), le chiffre d'affaires total s'élève à 145,3 millions d'euros, en progression de 8,2% par rapport à l'exercice précédent...",
+  "question": "Quel est le chiffre d affaires total pour 2023 ?",
+  "answer": "Selon le rapport annuel 2023 (page 12), le chiffre d'affaires total s'élève à 145,3 millions d'euros, en progression de 8,2% par rapport à l'exercice précédent.",
   "sources": [
     {
       "document_id": 1,
-      "document_name": "rapport_annuel_2023_a1b2c3d4.pdf",
+      "document_name": "rapport_annuel_2023.pdf",
       "page": 12,
-      "chunk_index": 45,
-      "content": "Le chiffre d'affaires consolidé pour l'exercice 2023...",
-      "similarity_score": 0.8423
+      "similarity_score": 0.842
     }
   ],
   "model_used": "mistral",
-  "chunks_retrieved": 5,
-  "processing_time_ms": 2340.5,
+  "processing_time_ms": 2340,
   "has_answer": true
 }
 ```
@@ -325,13 +302,7 @@ curl -X POST http://localhost:8000/api/v1/query/ \
 curl http://localhost:8000/api/v1/documents/
 ```
 
-### 4. Vérifier la santé du système
-
-```bash
-curl http://localhost:8000/api/v1/health
-```
-
-### 5. Restreindre la recherche à certains documents
+### 4. Restreindre la recherche à certains documents
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/query/ \
@@ -343,124 +314,107 @@ curl -X POST http://localhost:8000/api/v1/query/ \
   }'
 ```
 
----
-
-## Tests
-
-### Tests unitaires
+### 5. Supprimer un document
 
 ```bash
-# Activer le venv
-source venv/bin/activate
+curl -X DELETE http://localhost:8000/api/v1/documents/1
+```
 
-# Lancer tous les tests unitaires
+---
+
+## 🧪 Tests
+
+```bash
+# Tests unitaires
 pytest tests/unit/ -v
 
-# Avec couverture
+# Tests avec couverture
 pytest tests/unit/ --cov=app --cov-report=html
-```
 
-### Tests d'intégration API
-
-```bash
-# Tester l'API (doit être lancée au préalable)
-chmod +x scripts/test_api.sh
-
-# Sans document
-./scripts/test_api.sh
-
-# Avec un PDF financier
-./scripts/test_api.sh /chemin/vers/rapport_annuel.pdf
-```
-
-### Test complet Ollama
-
-```bash
-chmod +x scripts/test_ollama.sh
-OLLAMA_MODEL=mistral ./scripts/test_ollama.sh
+# Tests d'intégration (API doit être lancée)
+pytest tests/integration/ -v
 ```
 
 ---
 
-## Docker
-
-### Démarrage complet avec Docker Compose
+## 🐳 Docker
 
 ```bash
-# Construire et démarrer tous les services
+# Lancer tous les services
 docker-compose up --build -d
 
 # Suivre les logs
 docker-compose logs -f finrag-api
 
-# Arrêter les services
+# Arrêter
 docker-compose down
 ```
 
-Le service `ollama-pull` tire automatiquement le modèle au premier démarrage.
-
 ---
 
-## Structure du projet
+## 📁 Structure du projet
 
 ```
 finrag-agent/
 ├── app/
-│   ├── main.py                  # Point d'entrée FastAPI
+│   ├── main.py                   # Point d'entrée FastAPI
 │   ├── api/
 │   │   └── routes/
-│   │       ├── documents.py     # POST /upload, GET /, DELETE /{id}
-│   │       ├── query.py         # POST /query, GET /history
-│   │       └── health.py        # GET /health
+│   │       ├── documents.py      # Upload, liste, suppression
+│   │       ├── query.py          # Question + historique
+│   │       └── health.py         # Santé du système
 │   ├── core/
-│   │   ├── config.py            # Settings (pydantic-settings)
-│   │   └── database.py          # SQLAlchemy models + init
+│   │   ├── config.py             # Settings (.env)
+│   │   └── database.py           # SQLAlchemy + SQLite
 │   ├── models/
-│   │   └── schemas.py           # Pydantic request/response schemas
+│   │   └── schemas.py            # Schémas Pydantic
 │   └── services/
-│       ├── pdf_service.py       # Extraction + chunking PDF
-│       ├── vector_store.py      # ChromaDB + embeddings
-│       ├── ollama_service.py    # Client Ollama LLM
-│       └── ingestion_service.py # Pipeline orchestration
+│       ├── pdf_service.py        # Extraction + découpage PDF
+│       ├── vector_store.py       # ChromaDB + embeddings
+│       ├── ollama_service.py     # Client LLM Ollama
+│       └── ingestion_service.py  # Orchestration pipeline
 ├── data/
-│   ├── pdfs/                    # PDFs uploadés
-│   └── vectors/                 # ChromaDB persist
+│   ├── pdfs/                     # PDFs uploadés
+│   └── vectors/                  # ChromaDB persistant
 ├── tests/
 │   ├── unit/
-│   │   └── test_pdf_service.py  # Tests unitaires
 │   └── integration/
-│       └── test_api.py          # Tests d'intégration FastAPI
 ├── docs/
-│   └── ARCHITECTURE.md          # Documentation architecture détaillée
+│   └── ARCHITECTURE.md           # Documentation architecture
 ├── scripts/
-│   ├── setup.sh                 # Script d'installation
-│   ├── test_ollama.sh           # Tests Ollama
-│   └── test_api.sh              # Tests API end-to-end
+│   ├── setup.sh
+│   ├── test_ollama.sh
+│   └── test_api.sh
 ├── docker/
-│   └── Dockerfile               # Image Docker
-├── docker-compose.yml           # Orchestration Docker
-├── requirements.txt             # Dépendances Python
-├── pytest.ini                   # Configuration pytest
-├── .env.example                 # Template configuration
+│   └── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+├── .env.example
 └── README.md
 ```
 
 ---
 
-## Documents financiers supportés
+## 📄 Documents financiers supportés
 
-| Type | Exemples | Détection automatique |
-|------|---------|----------------------|
-| Rapport annuel | Rapport annuel 2023, Annual Report | ✅ |
-| Prospectus | Prospectus d'émission, IPO | ✅ |
-| Fiche fonds | Fund Factsheet, UCITS, OPCVM | ✅ |
-| États financiers | Bilan, Compte de résultat | ✅ |
-| Rapport trimestriel | Résultats T3 2023 | ✅ |
-| Note d'information | Document de référence | ✅ |
-| Autres | Tout document financier PDF | ✅ (générique) |
+| Type | Exemples |
+|------|---------|
+| Rapport annuel | Rapport annuel 2023, Annual Report |
+| Prospectus | Prospectus d'émission, Note d'information |
+| Fiche fonds | Fund Factsheet, OPCVM, UCITS |
+| États financiers | Bilan, Compte de résultat, Tableau de flux |
+| Rapport trimestriel | Résultats T3 2023, Quarterly Report |
+| Autres | Tout document financier PDF |
 
 ---
 
-## Licence
+## 👤 Auteur
 
-MIT License — voir [LICENSE](LICENSE)
+**Siwar Bouamoud**  
+GitHub : [github.com/siwar-bouamoud/finrag-agent](https://github.com/siwar-bouamoud/finrag-agent)
+
+---
+
+## 📜 Licence
+
+MIT License — libre d'utilisation, modification et distribution.

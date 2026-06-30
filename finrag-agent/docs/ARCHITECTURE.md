@@ -1,8 +1,13 @@
 # FinRAG Agent — Architecture & Choix Techniques
 
+**Développé par Siwar Bouamoud**  
+**Dépôt :** [github.com/siwar-bouamoud/finrag-agent](https://github.com/siwar-bouamoud/finrag-agent)
+
+---
+
 ## Vue d'ensemble
 
-FinRAG Agent est un système RAG (Retrieval-Augmented Generation) conçu spécifiquement pour l'analyse de documents financiers. Il permet d'interroger une base documentaire en langage naturel et obtenir des réponses ancrées dans les documents, sans hallucination.
+FinRAG Agent est un système RAG (Retrieval-Augmented Generation) conçu pour l'analyse de documents financiers. Il permet d'interroger une base documentaire PDF en langage naturel et d'obtenir des réponses factuelles, ancrées uniquement dans les documents indexés, sans hallucination et sans transmission de données à des API cloud externes.
 
 ---
 
@@ -10,12 +15,12 @@ FinRAG Agent est un système RAG (Retrieval-Augmented Generation) conçu spécif
 
 ### 1. API Gateway — FastAPI
 
-**Choix :** FastAPI 0.115  
-**Raisons :**
-- Framework Python le plus rapide (Starlette + Uvicorn)
-- Support natif `async/await` pour les opérations I/O
-- Génération automatique OpenAPI/Swagger
-- Validation des données via Pydantic (type safety)
+**Version :** FastAPI 0.115  
+**Justification :**
+- Framework Python asynchrone le plus rapide (Starlette + Uvicorn)
+- Support natif `async/await` pour les opérations I/O non-bloquantes
+- Génération automatique de documentation OpenAPI/Swagger
+- Validation des données via Pydantic (type safety stricte)
 - Middleware CORS intégré
 - Gestion du cycle de vie avec `lifespan`
 
@@ -27,7 +32,7 @@ FinRAG Agent est un système RAG (Retrieval-Augmented Generation) conçu spécif
 | GET | `/api/v1/documents/` | Lister tous les documents |
 | GET | `/api/v1/documents/{id}` | Détails d'un document |
 | DELETE | `/api/v1/documents/{id}` | Supprimer document + vecteurs |
-| POST | `/api/v1/query/` | Poser une question |
+| POST | `/api/v1/query/` | Poser une question (RAG pipeline) |
 | GET | `/api/v1/query/history` | Historique des requêtes |
 | GET | `/api/v1/health` | Santé du système |
 
@@ -38,21 +43,21 @@ FinRAG Agent est un système RAG (Retrieval-Augmented Generation) conçu spécif
 **Stratégie :** Double moteur avec fallback automatique
 
 ```
-pdfplumber (primaire)
-  → Meilleur pour : tableaux financiers, colonnes, texte structuré
-  → Extrait : texte + tableaux séparément
-  → Problème : peut échouer sur PDF scannés ou chiffrés
+pdfplumber (moteur primaire)
+  → Optimisé pour : tableaux financiers, colonnes, texte structuré
+  → Extrait : texte + tableaux séparément avec formatage
+  → Limite : peut échouer sur PDF scannés ou chiffrés
 
-pypdf (fallback)
-  → Meilleur pour : PDF simples, scannés avec texte OCR embarqué
-  → Plus tolérant aux PDF malformés
+pypdf (fallback automatique)
+  → Optimisé pour : PDF simples, documents avec texte OCR embarqué
+  → Plus tolérant aux PDF malformés ou protégés
 ```
 
 **Post-traitement :**
 - Normalisation des espaces et caractères spéciaux
 - Conversion des tableaux en texte structuré lisible
 - Numérotation des pages dans le texte extrait
-- Estimation du type de document (rapport annuel, prospectus, etc.)
+- Détection automatique du type de document (rapport annuel, prospectus, etc.)
 
 ---
 
@@ -60,22 +65,22 @@ pypdf (fallback)
 
 **Algorithme :** `RecursiveCharacterTextSplitter`
 
-**Paramètres par défaut :**
+**Paramètres :**
 ```
-chunk_size = 1000 caractères
+chunk_size    = 1000 caractères
 chunk_overlap = 200 caractères
-séparateurs = ["\n\n", "\n", ". ", " ", ""]
+séparateurs   = ["\n\n", "\n", ". ", " ", ""]
 ```
 
-**Raison du chevauchement :**  
-Les informations financières importantes peuvent chevaucher deux paragraphes (ex: "le ratio de solvabilité est de 12,5%... conformément aux exigences Bâle III"). Le chevauchement de 200 caractères préserve ce contexte.
+**Raison du chevauchement de 200 caractères :**  
+Les informations financières importantes chevauchent souvent deux paragraphes (ex: *"le ratio de solvabilité est de 12,5%... conformément aux exigences Bâle III"*). Le chevauchement préserve ce contexte inter-paragraphes.
 
 **Métadonnées stockées par chunk :**
-- `document_id` : référence vers SQLite
-- `filename` : nom du fichier source
-- `page_num` : numéro de page estimé
-- `chunk_index` : index dans la séquence
-- `char_count` : nombre de caractères
+- `document_id` — référence vers SQLite
+- `filename` — nom du fichier source
+- `page_num` — numéro de page estimé
+- `chunk_index` — index dans la séquence
+- `char_count` — nombre de caractères
 
 ---
 
@@ -84,93 +89,101 @@ Les informations financières importantes peuvent chevaucher deux paragraphes (e
 **Modèle :** `paraphrase-multilingual-mpnet-base-v2`
 
 **Justification :**
-- Supporte 50+ langues dont **français et anglais** (crucial pour docs financiers bilingues)
-- Dimensions : 768 → bonne capacité représentationnelle
+- Supporte 50+ langues dont **français et anglais** (essentiel pour documents financiers bilingues)
+- Dimensions : **768** — bonne capacité représentationnelle
 - Performance : top-3 MTEB pour les tâches de retrieval multilingue
-- Taille : ~280 MB (téléchargé automatiquement au premier démarrage)
+- Taille : ~280 MB (téléchargement automatique au premier démarrage)
 - Licence : Apache 2.0 (usage commercial autorisé)
-- **Gratuit, local, aucun appel API externe**
-
-**Alternative pour Ollama embeddings :**  
-Ollama peut aussi générer les embeddings (`nomic-embed-text`), mais sentence-transformers est plus rapide en batch processing et ne requiert pas Ollama pour l'indexation.
+- **100% local, aucun appel API externe, gratuit**
 
 ---
 
 ### 5. Base vectorielle — ChromaDB
 
-**Choix :** ChromaDB 0.5 (mode persistant)
+**Version :** ChromaDB 0.5 (mode persistant local)
 
 **Justification :**
-- **Zero-config** : pas de serveur séparé, s'intègre directement dans le processus Python
-- **Persistance** : les vecteurs survivent aux redémarrages
+- **Zero-config** : pas de serveur séparé, intégré directement dans le processus Python
+- **Persistance** : les vecteurs survivent aux redémarrages (stockés sur disque)
 - **Cosine similarity** : métrique optimale pour les embeddings textuels normalisés
-- **HNSW index** : recherche approximative rapide (logarithmique)
-- **Filtres de métadonnées** : permet de restreindre la recherche à un sous-ensemble de documents
+- **Index HNSW** : recherche approximative en temps logarithmique
+- **Filtres de métadonnées** : restriction de la recherche à un sous-ensemble de documents
 
-**Index utilisé :** HNSW (Hierarchical Navigable Small World)
+**Configuration de l'index :**
 ```
-Configuration : hnsw:space = cosine
-Score = 1 - cosine_distance
-Seuil minimum : 0.3 (configurable)
+Algorithme : HNSW (Hierarchical Navigable Small World)
+Métrique   : cosine
+Score      : 1 - cosine_distance
+Seuil min  : 0.3 (configurable via SIMILARITY_THRESHOLD)
 ```
 
-**Alternatives considérées :**
+**Alternatives évaluées et non retenues :**
 - Weaviate : nécessite un serveur Docker séparé
-- Qdrant : excellent mais overhead de déploiement
-- FAISS : rapide mais pas de persistance native ni filtres
+- Qdrant : excellent mais overhead de déploiement pour un MVP
+- FAISS : rapide mais pas de persistance native ni de filtres par métadonnées
 
 ---
 
 ### 6. LLM — Ollama
 
-**Choix :** Ollama comme runtime local pour LLM
-
-**Avantages :**
-- **Privé** : 100% local, aucune donnée ne sort du serveur
+**Justification du choix Ollama :**
+- **Confidentialité totale** : 100% local, aucune donnée financière sensible transmise à l'extérieur
+- **Conformité RGPD** : traitement des données sur la machine locale uniquement
 - **Gratuit** : pas de coût par requête
-- **Flexible** : un seul outil pour changer de modèle
-- **RGPD-compatible** : traitement des données financières sensibles en local
+- **Flexibilité** : changement de modèle sans modifier le code
 
 **Modèles recommandés :**
 
 | Modèle | RAM | Qualité FR | Vitesse | Usage |
 |--------|-----|-----------|---------|-------|
 | phi3:mini | 4 GB | Moyen | Rapide | Machines légères |
-| mistral:7b | 8 GB | Excellent | Moyen | Standard |
+| **mistral:7b** | **8 GB** | **Excellent** | **Moyen** | **Standard** ← recommandé |
 | llama3.2:8b | 10 GB | Très bon | Moyen | Standard+ |
 | mixtral:8x7b | 32 GB | Excellent | Lent | Serveurs |
 
-**Prompt engineering :**
-- Température basse (0.1) → réponses factuelles et reproductibles
-- System prompt spécialisé finance → citation des sources et refus d'inventer
-- Contexte RAG structuré → sources numérotées avec nom fichier et page
+**Paramètres de génération :**
+- Température : **0.1** → réponses factuelles et reproductibles (évite les hallucinations)
+- System prompt spécialisé finance → citation obligatoire des sources, refus d'inventer
+- Contexte RAG structuré → sources numérotées avec nom fichier et numéro de page
 
 ---
 
 ### 7. Base de données — SQLite + SQLAlchemy Async
 
-**Choix :** SQLite pour les métadonnées documentaires
+**Justification :** SQLite pour les métadonnées documentaires, SQLAlchemy async pour la compatibilité FastAPI.
 
-**Tables :**
+**Schéma des tables :**
 
 ```sql
 -- Documents indexés
 documents (
-  id, filename, original_filename, file_path,
-  file_size, page_count, doc_type, language,
-  status, chunk_count, error_message,
-  created_at, updated_at
+  id                INTEGER PRIMARY KEY,
+  filename          TEXT,       -- Nom sauvegardé (avec suffix UUID)
+  original_filename TEXT,       -- Nom original uploadé
+  file_path         TEXT,       -- Chemin sur disque
+  file_size         INTEGER,    -- Taille en bytes
+  page_count        INTEGER,    -- Nombre de pages
+  doc_type          TEXT,       -- Type détecté (rapport_annuel, etc.)
+  language          TEXT,       -- Langue détectée
+  status            TEXT,       -- pending / indexing / indexed / error
+  chunk_count       INTEGER,    -- Nombre de chunks générés
+  error_message     TEXT,       -- Message d'erreur si status=error
+  created_at        DATETIME,
+  updated_at        DATETIME
 )
 
 -- Historique des requêtes
 query_logs (
-  id, question, answer, sources (JSON),
-  processing_time_ms, model_used, chunks_retrieved,
-  created_at
+  id                  INTEGER PRIMARY KEY,
+  question            TEXT,       -- Question posée
+  answer              TEXT,       -- Réponse générée
+  sources             TEXT,       -- JSON: liste des sources citées
+  processing_time_ms  FLOAT,      -- Temps de traitement
+  model_used          TEXT,       -- Modèle Ollama utilisé
+  chunks_retrieved    INTEGER,    -- Nombre de chunks récupérés
+  created_at          DATETIME
 )
 ```
-
-**SQLAlchemy async :** Permet les opérations DB non-bloquantes compatibles avec FastAPI async.
 
 ---
 
@@ -181,15 +194,15 @@ query_logs (
 ```
 POST /api/v1/documents/upload
   │
-  ├─ Validation (extension PDF, taille max)
+  ├─ Validation (extension PDF, taille max 50 MB)
   │
-  ├─ Sauvegarde fichier : data/pdfs/{safe_filename}
+  ├─ Sauvegarde fichier : data/pdfs/{uuid_filename}.pdf
   │
   ├─ INSERT documents (status='pending')
   │
   ├─ PDFService.extract()
-  │    ├─ pdfplumber.open() → text + tables par page
-  │    └─ (fallback) pypdf.PdfReader() → text par page
+  │    ├─ pdfplumber.open() → texte + tableaux par page
+  │    └─ (fallback) pypdf.PdfReader() → texte par page
   │
   ├─ detect_doc_type() → classifie le type de document
   │
@@ -199,13 +212,13 @@ POST /api/v1/documents/upload
   │    └─ RecursiveCharacterTextSplitter → N chunks avec métadonnées
   │
   ├─ VectorStoreService.add_chunks()
-  │    ├─ SentenceTransformer.encode(texts) → embeddings [N x 768]
+  │    ├─ SentenceTransformer.encode(texts) → embeddings [N × 768]
   │    └─ ChromaDB.collection.upsert(ids, texts, embeddings, metadatas)
   │
   └─ UPDATE documents (status='indexed', chunk_count=N)
 ```
 
-### Traitement d'une requête
+### Traitement d'une requête RAG
 
 ```
 POST /api/v1/query/
@@ -219,43 +232,78 @@ POST /api/v1/query/
   ├─ Filtrage par seuil de similarité (≥ 0.3)
   │
   ├─ OllamaService.generate(question, chunks)
-  │    ├─ _build_rag_prompt() → contexte structuré
-  │    └─ POST /api/generate → réponse texte
+  │    ├─ _build_rag_prompt() → contexte structuré avec sources numérotées
+  │    └─ POST http://localhost:11434/api/generate → texte de réponse
   │
   ├─ INSERT query_logs (question, answer, sources, timing)
   │
-  └─ QueryResponse (answer, sources[], timing, model_used)
+  └─ QueryResponse (answer, sources[], timing_ms, model_used)
 ```
 
 ---
 
-## Considérations de performance
+## Performances estimées
 
-| Opération | Temps estimé | Optimisation possible |
-|-----------|-------------|----------------------|
-| Indexation (10 pages) | 5-15s | Batch embeddings, parallélisme |
-| Indexation (100 pages) | 30-90s | Worker asynchrone |
-| Recherche sémantique | < 500ms | Cache embeddings fréquents |
-| Génération LLM (mistral) | 2-10s | Streaming response |
-| Génération LLM (phi3:mini) | 1-3s | Plus rapide, moins précis |
+| Opération | Temps estimé | Notes |
+|-----------|-------------|-------|
+| Indexation (10 pages) | 5–15 secondes | Selon RAM et CPU |
+| Indexation (100 pages) | 30–90 secondes | Batch embeddings |
+| Recherche sémantique | < 500 ms | HNSW logarithmique |
+| Génération LLM (mistral) | 2–10 secondes | Selon charge CPU |
+| Génération LLM (phi3:mini) | 1–3 secondes | Plus rapide, moins précis |
 
 ---
 
 ## Sécurité
 
-- Validation des types de fichiers (extension + magic bytes)
-- Limite de taille de fichier (50 MB par défaut)
-- Nom de fichier sanitisé (UUID suffix pour éviter collisions)
-- LLM local → aucune donnée sensible transmise à des API externes
+- Validation du type de fichier (extension + magic bytes)
+- Limite de taille : 50 MB par fichier (configurable)
+- Nom de fichier sanitisé avec suffix UUID (évite les collisions et injections)
+- LLM 100% local → aucune donnée financière sensible transmise à des API externes
 - CORS configurable par environnement
 
 ---
 
-## Scalabilité future
+## Évolutivité future
 
 Le système peut évoluer vers :
-1. **Workers asynchrones** (Celery/Redis) pour l'indexation en arrière-plan
+
+1. **Workers asynchrones** (Celery + Redis) pour indexation en arrière-plan
 2. **PostgreSQL + pgvector** pour remplacer SQLite + ChromaDB en production
-3. **Streaming** des réponses LLM (SSE/WebSocket)
-4. **Multi-tenant** avec isolation par utilisateur/organisation
-5. **GPU acceleration** pour les embeddings et le LLM
+3. **Streaming** des réponses LLM (Server-Sent Events / WebSocket)
+4. **Multi-tenant** avec isolation par utilisateur ou organisation
+5. **GPU acceleration** pour accélérer embeddings et inférence LLM
+6. **Interface web** React/Vue pour une utilisation sans ligne de commande
+
+---
+
+## Étapes d'installation résumées
+
+```bash
+# 1. Cloner
+git clone https://github.com/siwar-bouamoud/finrag-agent.git
+cd finrag-agent
+
+# 2. Ollama
+ollama serve
+ollama pull mistral
+
+# 3. Python
+python -m venv venv
+source venv/bin/activate    # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
+# 4. Configuration
+cp .env.example .env
+# Éditer OLLAMA_MODEL=mistral dans .env
+
+# 5. Lancer
+uvicorn app.main:app --reload --port 8000
+
+# 6. Tester
+open http://localhost:8000/docs
+```
+
+---
+
+*Documentation rédigée par Siwar Bouamoud — Projet FinRAG Agent*
